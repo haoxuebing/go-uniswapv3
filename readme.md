@@ -8,7 +8,7 @@
 go run cmd/quoter/main.go
 ```
 
-2. 使用uniswapV3 实现两个加密货币的兑换
+2. 使用uniswapV3 实现任意两个加密货币的兑换
 
 **项目根目录下创建 .env 文件**
 
