@@ -13,19 +13,20 @@ import (
 	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/ethereum/go-ethereum/ethclient"
+	"github.com/shopspring/decimal"
 )
 
 const (
-	GasLimit     = 400000
+	GasLimit     = 900000
+	MoreGasPrice = 100000
 	UniswapFee   = 100 // Uniswap V3 的 fee tier (0.01%)
-	MoreGasPrice = 30000
 )
 
-// ExactInputSingle 执行 Uniswap V3 的兑换操作
-func ExactInputSingle(client *ethclient.Client, privateKey, routerAddress, tokenIn, tokenOut string, amountIn *big.Int) (string, error) {
-	chainID, _ := client.ChainID(context.Background())
+// ExactInputSingle 两个加密货币执行Uniswap V3 的兑换操作
+func ExactInputSingle(ctx context.Context, client *ethclient.Client, privateKey, routerAddress, tokenIn, tokenOut string, amountIn *big.Int) (string, error) {
+	chainID, _ := client.ChainID(ctx)
 
-	_, err := GetTokenTransferApproval(client, privateKey, tokenIn, routerAddress, amountIn)
+	_, err := GetTokenTransferApproval(ctx, client, privateKey, tokenIn, routerAddress, amountIn)
 	if err != nil {
 		return "", err
 	}
@@ -38,12 +39,12 @@ func ExactInputSingle(client *ethclient.Client, privateKey, routerAddress, token
 
 	// 创建授权的交易签署者
 	fromAddress := crypto.PubkeyToAddress(key.PublicKey)
-	gasPrice, err := client.SuggestGasPrice(context.Background())
+	gasPrice, err := client.SuggestGasPrice(ctx)
 	if err != nil {
 		return "", err
 	}
 	gasPrice = gasPrice.Add(gasPrice, big.NewInt(MoreGasPrice))
-	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
+	nonce, err := client.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
 		return "", err
 	}
@@ -60,11 +61,6 @@ func ExactInputSingle(client *ethclient.Client, privateKey, routerAddress, token
 	if err != nil {
 		return "", err
 	}
-
-	// path := []common.Address{
-	// 	common.HexToAddress(USDTAddress),
-	// 	common.HexToAddress(USDCAddress),
-	// }
 
 	params := router.ISwapRouterExactInputSingleParams{
 		TokenIn:           common.HexToAddress(tokenIn),
@@ -89,9 +85,104 @@ func ExactInputSingle(client *ethclient.Client, privateKey, routerAddress, token
 	return tx.Hash().Hex(), nil
 }
 
+// ExactInput 两个加密货币通过path执行Uniswap V3的兑换操作
+func ExactInput(ctx context.Context, client *ethclient.Client, privateKey, routerAddress, tokenIn, tokenOut string, amountIn *big.Int) (string, error) {
+	chainID, _ := client.ChainID(ctx)
+
+	// 获取WETH
+	midToken, err := GetMidToken(client, routerAddress)
+	if err != nil {
+		return "", err
+	}
+
+	// 获取报价和路径
+	quote, path, err := QuoteExactInput(ctx, client, QuoterV2Address, tokenIn, midToken, tokenOut, amountIn)
+	if err != nil {
+		return "", err
+	}
+	if len(path) == 0 {
+		return "", fmt.Errorf("path is nil")
+	}
+
+	quoteAmountD := decimal.NewFromBigInt(quote, -ARBDecimals)
+	fmt.Println("quote:", quoteAmountD.String())
+	fmt.Println("path:", common.Bytes2Hex(path))
+
+	// 授权代币交易
+	_, err = GetTokenTransferApproval(ctx, client, privateKey, tokenIn, routerAddress, amountIn)
+	if err != nil {
+		return "", err
+	}
+
+	// 将私钥导入
+	key, err := crypto.HexToECDSA(privateKey)
+	if err != nil {
+		return "", err
+	}
+
+	// 创建授权的交易签署者
+	fromAddress := crypto.PubkeyToAddress(key.PublicKey)
+
+	gasPrice, err := client.SuggestGasPrice(ctx)
+	if err != nil {
+		return "", err
+	}
+	gasPrice = gasPrice.Add(gasPrice, big.NewInt(MoreGasPrice))
+	nonce, err := client.PendingNonceAt(ctx, fromAddress)
+	if err != nil {
+		return "", err
+	}
+
+	// 设置交易选项
+	txOpts, _ := bind.NewKeyedTransactorWithChainID(key, chainID)
+	txOpts.Nonce = big.NewInt(int64(nonce))
+	txOpts.Value = big.NewInt(0)
+	txOpts.GasLimit = uint64(GasLimit) // 设置 gas 限额
+	txOpts.GasPrice = gasPrice
+
+	// 与 Uniswap V3 路由器交互执行兑换
+	route, err := router.NewRouterTransactor(common.HexToAddress(routerAddress), client)
+	if err != nil {
+		return "", err
+	}
+
+	params := router.ISwapRouterExactInputParams{
+		Path:             path,
+		Recipient:        fromAddress,
+		Deadline:         big.NewInt(time.Now().Add(time.Minute * 15).Unix()), // 15 分钟超时
+		AmountIn:         amountIn,
+		AmountOutMinimum: big.NewInt(0), // 设置最小接受输出值
+	}
+
+	tx, err := route.ExactInput(
+		txOpts,
+		params,
+	)
+	if err != nil {
+		return "", err
+	}
+
+	fmt.Println("Transaction sent: ", tx.Hash().Hex())
+	return tx.Hash().Hex(), nil
+}
+
+func GetMidToken(client *ethclient.Client, routerAddress string) (string, error) {
+	route, err := router.NewRouterCaller(common.HexToAddress(routerAddress), client)
+	if err != nil {
+		return "", err
+	}
+
+	weth, err := route.WETH9(&bind.CallOpts{})
+	if err != nil {
+		return "", err
+	}
+
+	return weth.String(), nil
+}
+
 // GetTokenTransferApproval 封装 ERC20 代币的 approve 操作
-func GetTokenTransferApproval(client *ethclient.Client, privateKey string, tokenAddress string, spenderAddress string, amount *big.Int) (string, error) {
-	chainID, _ := client.ChainID(context.Background())
+func GetTokenTransferApproval(ctx context.Context, client *ethclient.Client, privateKey string, tokenAddress string, spenderAddress string, amount *big.Int) (string, error) {
+	chainID, _ := client.ChainID(ctx)
 	// 将私钥转化为 ECDSA 格式
 	key, err := crypto.HexToECDSA(privateKey)
 	if err != nil {
@@ -102,13 +193,13 @@ func GetTokenTransferApproval(client *ethclient.Client, privateKey string, token
 	fromAddress := crypto.PubkeyToAddress(key.PublicKey)
 
 	// 获取当前 nonce 值
-	nonce, err := client.PendingNonceAt(context.Background(), fromAddress)
+	nonce, err := client.PendingNonceAt(ctx, fromAddress)
 	if err != nil {
 		return "", err
 	}
 
 	// 获取建议的 gas 价格
-	gasPrice, err := client.SuggestGasPrice(context.Background())
+	gasPrice, err := client.SuggestGasPrice(ctx)
 	if err != nil {
 		return "", err
 	}
