@@ -1,65 +1,46 @@
 package main
 
 import (
-	"context"
+	"fmt"
+	"log"
+	"math/big"
+	"os"
+
 	"go-contracts/helper"
 
-	"github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/ethclient"
-	"github.com/shopspring/decimal"
+	"github.com/joho/godotenv"
 )
 
-var (
-	QuoterV2Address = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+const (
+	UniswapV3RouterAddress = "0xE592427A0AEce92De3Edee1F18E0157C05861564" // Uniswap V3 Router
+	USDTAddress            = "0xFd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9" // USDT 合约地址
+	USDCAddress            = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831" // USDC 合约地址
 
-	WETH               = "0x82af49447d8a07e3bd95bd0d56f35241523fbab1"
-	USDC               = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831"
-	ARB                = "0x912CE59144191C1204E64559FE8253a0e49E6548"
-	ARBDecimals  int32 = 18
-	USDCDecimals int32 = 6
 )
 
 func main() {
-	rpcUrl := "https://arb1.arbitrum.io/rpc"
-	client, _ := ethclient.Dial(rpcUrl)
-
-	ctx := context.Background()
-	amountInParam := decimal.NewFromInt(1)
-	amountIn := amountInParam.Mul(decimal.New(1, USDCDecimals)).BigInt()
-	amountOutParam := decimal.NewFromInt(1)
-	amountOut := amountOutParam.Mul(decimal.New(1, ARBDecimals)).BigInt()
-
-	// QuoteExactInputSingle
-	amountQuote, err := helper.QuoteExactInputSingle(ctx, client, QuoterV2Address, USDC, ARB, amountIn)
+	// 加载 .env 文件
+	err := godotenv.Load()
 	if err != nil {
-		panic(err)
+		log.Fatal("Error loading .env file")
 	}
-	quoteAmountD := decimal.NewFromBigInt(amountQuote, -ARBDecimals)
-	println(quoteAmountD.String())
 
-	// QuoteExactOutputSingle
-	amountQuote2, err := helper.QuoteExactOutputSingle(ctx, client, QuoterV2Address, USDC, ARB, amountOut)
-	if err != nil {
-		panic(err)
-	}
-	quoteAmountD2 := decimal.NewFromBigInt(amountQuote2, -USDCDecimals)
-	println(quoteAmountD2.String())
+	// 读取环境变量
+	privateKey := os.Getenv("PRIVATE_KEY")
+	infuraProjectID := os.Getenv("INFURA_PROJECT_ID")
 
-	// QuoteExactInput
-	amountQuote3, path, err := helper.QuoteExactInput(ctx, client, QuoterV2Address, USDC, WETH, ARB, amountIn)
+	rawURL := fmt.Sprintf("https://arbitrum-mainnet.infura.io/v3/%s", infuraProjectID)
+	client, err := ethclient.Dial(rawURL)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	quoteAmountD3 := decimal.NewFromBigInt(amountQuote3, -ARBDecimals)
-	println(quoteAmountD3.String())
-	println(common.Bytes2Hex(path))
 
-	// QuoteExactOutput
-	amountQuote4, path, err := helper.QuoteExactOutput(ctx, client, QuoterV2Address, USDC, WETH, ARB, amountIn)
+	// 设置交易值
+	amountIn := big.NewInt(100000) // 假设兑换 0.1 USDT（USDT 精度为6位）
+	txHash, err := helper.ExactInputSingle(client, privateKey, UniswapV3RouterAddress, USDTAddress, USDCAddress, amountIn)
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	quoteAmountD4 := decimal.NewFromBigInt(amountQuote4, -ARBDecimals)
-	println(quoteAmountD4.String())
-	println(common.Bytes2Hex(path))
+	fmt.Println("Transaction hash:", txHash)
 }
