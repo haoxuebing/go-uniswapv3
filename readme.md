@@ -20,3 +20,7 @@ INFURA_PROJECT_ID=your_infura_project_id
 ```sh
 go run cmd/swap/main.go
 ```
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
